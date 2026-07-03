@@ -1,65 +1,79 @@
-// Calculate daily savings from per-2-day values
-export const getDailySavings = (perTwoDays) => perTwoDays / 2
+// Environmental savings are computed per dose:
+//   savings = (impact per dose) x (number of doses) x (switch fraction) x (projection)
+//
+// The uploaded / entered doses are treated as the observed audit. The audit is
+// assumed to span `auditDays` days, and the time-period selector projects that
+// observation onto a week / month / year.
 
-// Time period multipliers (converting daily to period)
-export const timePeriodMultipliers = {
+const round2 = (n) => Math.round(n * 100) / 100
+
+// Days represented by each time period.
+export const timePeriodDays = {
   week: 7,
   month: 30,
   year: 365,
 }
 
-// Calculate total savings for a list of patient medications
+// Scale factor to project the observed audit onto the chosen time period.
+// auditDays defaults sensibly and is guarded against 0.
+export const projectionFactor = (timePeriod, auditDays) => {
+  const days = timePeriodDays[timePeriod] ?? 30
+  const audit = auditDays > 0 ? auditDays : 1
+  return days / audit
+}
+
+// Total savings across all dose entries.
 export const calculateTotalSavings = (
-  patientMedications,
+  doseEntries,
   medications,
   switchPercentage,
-  timePeriod
+  timePeriod,
+  auditDays
 ) => {
-  const multiplier = timePeriodMultipliers[timePeriod]
+  const factor = projectionFactor(timePeriod, auditDays)
   const switchRatio = switchPercentage / 100
 
   let totalCO2 = 0
   let totalPlastic = 0
 
-  patientMedications.forEach((pm) => {
-    const medication = medications.find((m) => m.id === pm.medicationId)
+  doseEntries.forEach((entry) => {
+    const medication = medications.find((m) => m.id === entry.medicationId)
     if (medication) {
-      const dailyCO2 = getDailySavings(medication.co2PerTwoDays)
-      const dailyPlastic = getDailySavings(medication.plasticPerTwoDays)
-
-      totalCO2 += dailyCO2 * pm.patientCount * switchRatio * multiplier
-      totalPlastic += dailyPlastic * pm.patientCount * switchRatio * multiplier
+      const doses = entry.doses || 0
+      totalCO2 += (medication.co2PerDose || 0) * doses * switchRatio * factor
+      totalPlastic += (medication.plasticPerDose || 0) * doses * switchRatio * factor
     }
   })
 
   return {
-    co2: Math.round(totalCO2 * 100) / 100,
-    plastic: Math.round(totalPlastic * 100) / 100,
+    co2: round2(totalCO2),
+    plastic: round2(totalPlastic),
   }
 }
 
-// Generate chart data for visualization
+// Per-medication chart data.
 export const generateChartData = (
-  patientMedications,
+  doseEntries,
   medications,
   switchPercentage,
-  timePeriod
+  timePeriod,
+  auditDays
 ) => {
-  const multiplier = timePeriodMultipliers[timePeriod]
+  const factor = projectionFactor(timePeriod, auditDays)
   const switchRatio = switchPercentage / 100
 
-  return patientMedications.map((pm) => {
-    const medication = medications.find((m) => m.id === pm.medicationId)
-    if (!medication) return null
+  return doseEntries
+    .map((entry) => {
+      const medication = medications.find((m) => m.id === entry.medicationId)
+      if (!medication) return null
+      const doses = entry.doses || 0
 
-    const dailyCO2 = getDailySavings(medication.co2PerTwoDays)
-    const dailyPlastic = getDailySavings(medication.plasticPerTwoDays)
-
-    return {
-      name: medication.name,
-      co2: Math.round(dailyCO2 * pm.patientCount * switchRatio * multiplier * 100) / 100,
-      plastic: Math.round(dailyPlastic * pm.patientCount * switchRatio * multiplier * 100) / 100,
-      patients: pm.patientCount,
-    }
-  }).filter(Boolean)
+      return {
+        name: medication.name,
+        co2: round2((medication.co2PerDose || 0) * doses * switchRatio * factor),
+        plastic: round2((medication.plasticPerDose || 0) * doses * switchRatio * factor),
+        doses,
+      }
+    })
+    .filter(Boolean)
 }

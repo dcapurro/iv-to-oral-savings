@@ -3,19 +3,21 @@ import { useMedication } from '../context/MedicationContext'
 import { calculateTotalSavings } from '../utils/calculations'
 
 export default function SavingsSummary() {
-  const { medications, patientMedications, switchPercentage, timePeriod } = useMedication()
+  const { medications, doseEntries, switchPercentage, timePeriod, auditDays } =
+    useMedication()
 
   const savings = calculateTotalSavings(
-    patientMedications,
+    doseEntries,
     medications,
     switchPercentage,
-    timePeriod
+    timePeriod,
+    auditDays
   )
 
   const timePeriodLabel = timePeriod.charAt(0).toUpperCase() + timePeriod.slice(1)
 
-  const totalPatients = patientMedications.reduce((sum, pm) => sum + pm.patientCount, 0)
-  const switchedPatients = Math.round(totalPatients * (switchPercentage / 100))
+  const totalDoses = doseEntries.reduce((sum, e) => sum + e.doses, 0)
+  const switchedDoses = Math.round(totalDoses * (switchPercentage / 100))
 
   return (
     <div className="card bg-gradient-to-br from-primary-500 to-secondary-600 text-white">
@@ -46,9 +48,9 @@ export default function SavingsSummary() {
 
       <div className="bg-white/10 rounded-lg p-4">
         <div className="flex justify-between items-center">
-          <span className="text-primary-100">Patients switched:</span>
+          <span className="text-primary-100">Doses switched:</span>
           <span className="font-semibold">
-            {switchedPatients} of {totalPatients}
+            {switchedDoses} of {totalDoses}
           </span>
         </div>
         <div className="w-full bg-white/20 rounded-full h-2 mt-2">

@@ -1,21 +1,30 @@
-import { useState } from 'react'
-import { Plus, Trash2, Edit2, Check, X, Database, AlertCircle } from 'lucide-react'
+import { useRef, useState } from 'react'
+import { Plus, Trash2, Edit2, Check, X, Database, AlertCircle, Upload } from 'lucide-react'
 import { useMedication } from '../context/MedicationContext'
+import { parseCsv, toObjects, pick } from '../utils/csv'
 
 export default function Settings() {
-  const { medications, addMedication, updateMedication, deleteMedication } = useMedication()
+  const {
+    medications,
+    addMedication,
+    updateMedication,
+    deleteMedication,
+    importMedications,
+  } = useMedication()
 
   const [isAdding, setIsAdding] = useState(false)
   const [editingId, setEditingId] = useState(null)
   const [formData, setFormData] = useState({
     name: '',
-    co2PerTwoDays: '',
-    plasticPerTwoDays: '',
+    co2PerDose: '',
+    plasticPerDose: '',
   })
   const [error, setError] = useState('')
+  const [importResult, setImportResult] = useState(null)
+  const fileInputRef = useRef(null)
 
   const resetForm = () => {
-    setFormData({ name: '', co2PerTwoDays: '', plasticPerTwoDays: '' })
+    setFormData({ name: '', co2PerDose: '', plasticPerDose: '' })
     setError('')
   }
 
@@ -30,8 +39,8 @@ export default function Settings() {
     setIsAdding(false)
     setFormData({
       name: med.name,
-      co2PerTwoDays: med.co2PerTwoDays.toString(),
-      plasticPerTwoDays: med.plasticPerTwoDays.toString(),
+      co2PerDose: med.co2PerDose.toString(),
+      plasticPerDose: med.plasticPerDose.toString(),
     })
     setError('')
   }
@@ -47,12 +56,12 @@ export default function Settings() {
       setError('Medication name is required')
       return false
     }
-    if (!formData.co2PerTwoDays || parseFloat(formData.co2PerTwoDays) < 0) {
-      setError('CO2 savings must be a positive number')
+    if (formData.co2PerDose === '' || parseFloat(formData.co2PerDose) < 0) {
+      setError('CO2 per dose must be a positive number')
       return false
     }
-    if (!formData.plasticPerTwoDays || parseFloat(formData.plasticPerTwoDays) < 0) {
-      setError('Plastic savings must be a positive number')
+    if (formData.plasticPerDose === '' || parseFloat(formData.plasticPerDose) < 0) {
+      setError('Plastic per dose must be a positive number')
       return false
     }
     return true
@@ -63,8 +72,8 @@ export default function Settings() {
 
     const data = {
       name: formData.name.trim(),
-      co2PerTwoDays: parseFloat(formData.co2PerTwoDays),
-      plasticPerTwoDays: parseFloat(formData.plasticPerTwoDays),
+      co2PerDose: parseFloat(formData.co2PerDose),
+      plasticPerDose: parseFloat(formData.plasticPerDose),
     }
 
     if (isAdding) {
@@ -80,6 +89,23 @@ export default function Settings() {
     if (window.confirm('Are you sure you want to delete this medication?')) {
       deleteMedication(id)
     }
+  }
+
+  const handleFile = (e) => {
+    const file = e.target.files?.[0]
+    if (!file) return
+    const reader = new FileReader()
+    reader.onload = () => {
+      const objects = toObjects(parseCsv(String(reader.result)))
+      const list = objects.map((row) => ({
+        name: pick(row, 'medication', 'drug', 'name'),
+        co2PerDose: pick(row, 'carbon', 'co2', 'co2perdose'),
+        plasticPerDose: pick(row, 'plastic', 'plasticperdose'),
+      }))
+      setImportResult(importMedications(list))
+    }
+    reader.readAsText(file)
+    e.target.value = ''
   }
 
   const renderForm = () => (
@@ -107,27 +133,27 @@ export default function Settings() {
           />
         </div>
         <div>
-          <label className="block text-sm text-slate-600 mb-1">CO2 Saved (kg/2 days)</label>
+          <label className="block text-sm text-slate-600 mb-1">Carbon (kg CO2/dose)</label>
           <input
             type="number"
             min="0"
-            step="0.1"
-            value={formData.co2PerTwoDays}
-            onChange={(e) => setFormData({ ...formData, co2PerTwoDays: e.target.value })}
+            step="0.01"
+            value={formData.co2PerDose}
+            onChange={(e) => setFormData({ ...formData, co2PerDose: e.target.value })}
             className="input-field"
-            placeholder="e.g., 0.8"
+            placeholder="e.g., 0.15"
           />
         </div>
         <div>
-          <label className="block text-sm text-slate-600 mb-1">Plastic Saved (g/2 days)</label>
+          <label className="block text-sm text-slate-600 mb-1">Plastic (g/dose)</label>
           <input
             type="number"
             min="0"
             step="1"
-            value={formData.plasticPerTwoDays}
-            onChange={(e) => setFormData({ ...formData, plasticPerTwoDays: e.target.value })}
+            value={formData.plasticPerDose}
+            onChange={(e) => setFormData({ ...formData, plasticPerDose: e.target.value })}
             className="input-field"
-            placeholder="e.g., 45"
+            placeholder="e.g., 22"
           />
         </div>
       </div>
@@ -154,12 +180,37 @@ export default function Settings() {
         </h2>
 
         {!isAdding && !editingId && (
-          <button onClick={startAdding} className="btn-primary flex items-center gap-2">
-            <Plus className="w-4 h-4" />
-            Add Medication
-          </button>
+          <div className="flex items-center gap-2">
+            <button
+              onClick={() => fileInputRef.current?.click()}
+              className="btn-secondary flex items-center gap-2"
+            >
+              <Upload className="w-4 h-4" />
+              Upload CSV
+            </button>
+            <button onClick={startAdding} className="btn-primary flex items-center gap-2">
+              <Plus className="w-4 h-4" />
+              Add Medication
+            </button>
+          </div>
         )}
       </div>
+
+      <input
+        ref={fileInputRef}
+        type="file"
+        accept=".csv,text/csv"
+        onChange={handleFile}
+        className="hidden"
+      />
+
+      {importResult && (
+        <div className="flex items-center gap-2 text-green-700 bg-green-50 px-3 py-2 rounded mb-4 text-sm">
+          <Check className="w-4 h-4" />
+          Imported: {importResult.added} added, {importResult.updated} updated
+          {importResult.skipped > 0 && `, ${importResult.skipped} skipped (invalid)`}.
+        </div>
+      )}
 
       {(isAdding || editingId) && renderForm()}
 
@@ -168,8 +219,8 @@ export default function Settings() {
           <thead>
             <tr className="border-b border-slate-200">
               <th className="text-left py-3 px-4 text-slate-600 font-medium">Medication</th>
-              <th className="text-right py-3 px-4 text-slate-600 font-medium">CO2 (kg/2 days)</th>
-              <th className="text-right py-3 px-4 text-slate-600 font-medium">Plastic (g/2 days)</th>
+              <th className="text-right py-3 px-4 text-slate-600 font-medium">Carbon (kg CO2/dose)</th>
+              <th className="text-right py-3 px-4 text-slate-600 font-medium">Plastic (g/dose)</th>
               <th className="text-right py-3 px-4 text-slate-600 font-medium">Actions</th>
             </tr>
           </thead>
@@ -182,8 +233,8 @@ export default function Settings() {
                 }`}
               >
                 <td className="py-3 px-4 font-medium text-slate-700">{med.name}</td>
-                <td className="py-3 px-4 text-right text-slate-600">{med.co2PerTwoDays}</td>
-                <td className="py-3 px-4 text-right text-slate-600">{med.plasticPerTwoDays}</td>
+                <td className="py-3 px-4 text-right text-slate-600">{med.co2PerDose}</td>
+                <td className="py-3 px-4 text-right text-slate-600">{med.plasticPerDose}</td>
                 <td className="py-3 px-4 text-right">
                   <div className="flex justify-end gap-1">
                     <button
@@ -210,16 +261,18 @@ export default function Settings() {
 
       {medications.length === 0 && (
         <p className="text-slate-500 text-center py-8">
-          No medications in database. Click "Add Medication" to add one.
+          No medications in database. Click "Add Medication" or upload a CSV.
         </p>
       )}
 
       <div className="mt-6 p-4 bg-slate-50 rounded-lg">
         <p className="text-sm text-slate-600">
-          <strong>Note:</strong> CO2 and plastic savings values represent the environmental
-          impact reduction per 2 days of treatment when switching from IV to oral therapy.
-          These values should be sourced from environmental impact studies specific to your
-          healthcare setting.
+          <strong>CSV format:</strong> three columns -{' '}
+          <code>medication</code>, <code>carbon</code> (kg CO2 per dose),{' '}
+          <code>plastic</code> (g per dose). Rows matching an existing medication
+          name update it; new names are added. Values represent the environmental
+          impact avoided for each IV dose switched to oral, and should be sourced
+          from environmental impact studies specific to your healthcare setting.
         </p>
       </div>
     </div>
