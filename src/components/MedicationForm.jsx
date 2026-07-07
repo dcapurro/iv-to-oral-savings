@@ -6,6 +6,7 @@ import { parseAuditFile } from '../utils/auditFile'
 export default function MedicationForm() {
   const {
     medications,
+    doseEntries,
     filteredDoseEntries,
     addDoseEntry,
     clearDoseEntries,
@@ -15,7 +16,14 @@ export default function MedicationForm() {
   const [selectedMedication, setSelectedMedication] = useState('')
   const [doseCount, setDoseCount] = useState('')
   const [importResult, setImportResult] = useState(null)
+  const [confirmingClear, setConfirmingClear] = useState(false)
   const fileInputRef = useRef(null)
+
+  const handleClearAudit = () => {
+    clearDoseEntries()
+    setImportResult(null)
+    setConfirmingClear(false)
+  }
 
   const handleSubmit = (e) => {
     e.preventDefault()
@@ -79,20 +87,45 @@ export default function MedicationForm() {
             <Upload className="w-4 h-4" />
             Upload Audit CSV
           </button>
-          {filteredDoseEntries.length > 0 && (
+          {doseEntries.length > 0 && (
             <button
-              onClick={() => {
-                clearDoseEntries()
-                setImportResult(null)
-              }}
-              className="p-2 text-red-500 hover:bg-red-100 rounded"
-              title="Clear all"
+              onClick={() => setConfirmingClear(true)}
+              className="btn-danger flex items-center gap-2 text-sm"
             >
               <Trash2 className="w-4 h-4" />
+              Clear audit data
             </button>
           )}
         </div>
       </div>
+
+      {confirmingClear && (
+        <div className="mb-4 flex flex-col sm:flex-row sm:items-center sm:justify-between gap-3 bg-red-50 border border-red-200 rounded-lg px-4 py-3">
+          <div className="flex items-start gap-2 text-red-700 text-sm">
+            <AlertCircle className="w-4 h-4 mt-0.5 shrink-0" />
+            <span>
+              Clear all loaded audit data? This removes every dose entry and
+              resets the filters so you can upload a new batch. This cannot be
+              undone.
+            </span>
+          </div>
+          <div className="flex items-center gap-2 shrink-0">
+            <button
+              onClick={handleClearAudit}
+              className="btn-danger flex items-center gap-2 text-sm"
+            >
+              <Trash2 className="w-4 h-4" />
+              Yes, clear it
+            </button>
+            <button
+              onClick={() => setConfirmingClear(false)}
+              className="btn-secondary text-sm"
+            >
+              Cancel
+            </button>
+          </div>
+        </div>
+      )}
 
       <input
         ref={fileInputRef}
