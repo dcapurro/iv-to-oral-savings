@@ -3,28 +3,41 @@ import { useMedication } from '../context/MedicationContext'
 import { calculateTotalSavings } from '../utils/calculations'
 
 export default function SavingsSummary() {
-  const { medications, doseEntries, switchPercentage, timePeriod, auditDays } =
-    useMedication()
+  const {
+    medications,
+    filteredDoseEntries,
+    switchPercentage,
+    timePeriod,
+    effectiveAuditDays,
+    selectedUnit,
+    selectedWard,
+  } = useMedication()
 
   const savings = calculateTotalSavings(
-    doseEntries,
+    filteredDoseEntries,
     medications,
     switchPercentage,
     timePeriod,
-    auditDays
+    effectiveAuditDays
   )
 
   const timePeriodLabel = timePeriod.charAt(0).toUpperCase() + timePeriod.slice(1)
+  const scopeLabel = `${selectedUnit === 'all' ? 'All units' : selectedUnit} · ${
+    selectedWard === 'all' ? 'All wards' : selectedWard
+  }`
 
-  const totalDoses = doseEntries.reduce((sum, e) => sum + e.doses, 0)
+  const totalDoses = filteredDoseEntries.reduce((sum, e) => sum + e.doses, 0)
   const switchedDoses = Math.round(totalDoses * (switchPercentage / 100))
 
   return (
     <div className="card bg-gradient-to-br from-primary-500 to-secondary-600 text-white">
-      <h2 className="text-lg font-semibold mb-4 flex items-center gap-2">
-        <TrendingUp className="w-5 h-5" />
-        Total Savings ({timePeriodLabel})
-      </h2>
+      <div className="mb-4">
+        <h2 className="text-lg font-semibold flex items-center gap-2">
+          <TrendingUp className="w-5 h-5" />
+          Total Savings ({timePeriodLabel})
+        </h2>
+        <p className="text-primary-100 text-sm mt-1">{scopeLabel}</p>
+      </div>
 
       <div className="grid grid-cols-2 gap-4 mb-6">
         <div className="bg-white/10 rounded-lg p-4">

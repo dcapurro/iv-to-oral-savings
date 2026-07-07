@@ -1,30 +1,25 @@
-import { useRef, useState } from 'react'
-import { Plus, Trash2, Edit2, Check, X, Syringe, Upload, AlertCircle } from 'lucide-react'
+import { useRef, useState, useMemo } from 'react'
+import { Plus, Trash2, Check, Syringe, Upload, AlertCircle } from 'lucide-react'
 import { useMedication } from '../context/MedicationContext'
-import { parseCsv, toObjects, pick } from '../utils/csv'
+import { parseAuditFile } from '../utils/auditFile'
 
 export default function MedicationForm() {
   const {
     medications,
-    doseEntries,
+    filteredDoseEntries,
     addDoseEntry,
-    updateDoseEntry,
-    removeDoseEntry,
     clearDoseEntries,
-    importDoses,
+    importAuditDoses,
   } = useMedication()
 
   const [selectedMedication, setSelectedMedication] = useState('')
   const [doseCount, setDoseCount] = useState('')
-  const [editingId, setEditingId] = useState(null)
-  const [editValue, setEditValue] = useState('')
   const [importResult, setImportResult] = useState(null)
   const fileInputRef = useRef(null)
 
   const handleSubmit = (e) => {
     e.preventDefault()
     if (!selectedMedication || !doseCount || parseInt(doseCount) <= 0) return
-
     addDoseEntry(selectedMedication, parseInt(doseCount))
     setSelectedMedication('')
     setDoseCount('')
@@ -35,35 +30,12 @@ export default function MedicationForm() {
     if (!file) return
     const reader = new FileReader()
     reader.onload = () => {
-      const objects = toObjects(parseCsv(String(reader.result)))
-      const list = objects.map((row) => ({
-        name: pick(row, 'medication', 'drug', 'name'),
-        doses: pick(row, 'number doses', 'doses', 'dose', 'count'),
-      }))
-      const result = importDoses(list)
-      setImportResult(result)
+      const parsed = parseAuditFile(String(reader.result))
+      const result = importAuditDoses(parsed.entries)
+      setImportResult({ ...result, ...parsed })
     }
     reader.readAsText(file)
     e.target.value = ''
-  }
-
-  const startEditing = (entry) => {
-    setEditingId(entry.id)
-    setEditValue(entry.doses.toString())
-  }
-
-  const saveEdit = (id) => {
-    const count = parseInt(editValue)
-    if (count > 0) {
-      updateDoseEntry(id, count)
-    }
-    setEditingId(null)
-    setEditValue('')
-  }
-
-  const cancelEdit = () => {
-    setEditingId(null)
-    setEditValue('')
   }
 
   const getMedicationName = (medicationId) => {
@@ -71,12 +43,33 @@ export default function MedicationForm() {
     return med ? med.name : 'Unknown'
   }
 
+  // Aggregate the (filtered) eligible doses by medication for a readable list.
+  const summary = useMemo(() => {
+    const map = new Map()
+    filteredDoseEntries.forEach((e) => {
+      const cur = map.get(e.medicationId) || { doses: 0, units: new Set() }
+      cur.doses += e.doses
+      if (e.unit) cur.units.add(e.unit)
+      map.set(e.medicationId, cur)
+    })
+    return [...map.entries()]
+      .map(([medicationId, v]) => ({
+        medicationId,
+        name: getMedicationName(medicationId),
+        doses: v.doses,
+        unitCount: v.units.size,
+      }))
+      .sort((a, b) => b.doses - a.doses)
+  }, [filteredDoseEntries, medications])
+
+  const totalDoses = filteredDoseEntries.reduce((s, e) => s + e.doses, 0)
+
   return (
     <div className="card">
       <div className="flex items-center justify-between mb-4">
         <h2 className="text-lg font-semibold text-slate-800 flex items-center gap-2">
           <Syringe className="w-5 h-5 text-primary-500" />
-          Missed-Switch Doses
+          Switchable IV Doses
         </h2>
         <div className="flex items-center gap-2">
           <button
@@ -84,9 +77,9 @@ export default function MedicationForm() {
             className="btn-secondary flex items-center gap-2 text-sm"
           >
             <Upload className="w-4 h-4" />
-            Upload CSV
+            Upload Audit CSV
           </button>
-          {doseEntries.length > 0 && (
+          {filteredDoseEntries.length > 0 && (
             <button
               onClick={() => {
                 clearDoseEntries()
@@ -110,25 +103,39 @@ export default function MedicationForm() {
       />
 
       <p className="text-sm text-slate-500 mb-4">
-        Upload a CSV with two columns (<code>medication</code>, <code>doses</code>) of
-        missed opportunities to switch to oral, or add them manually below.
+        Upload the ward audit export (wide format). Only doses flagged{' '}
+        <strong>Switch = Yes</strong> are counted. Use the filters below to scope
+        by unit, ward or date.
       </p>
 
       {importResult && (
         <div className="mb-4 space-y-2">
           <div className="flex items-center gap-2 text-green-700 bg-green-50 px-3 py-2 rounded text-sm">
-            <Check className="w-4 h-4" />
-            Imported doses for {importResult.matched} medication
-            {importResult.matched === 1 ? '' : 's'}.
+            <Check className="w-4 h-4 shrink-0" />
+            Loaded {importResult.matchedDoses} switchable dose
+            {importResult.matchedDoses === 1 ? '' : 's'} across{' '}
+            {importResult.matched} medication
+            {importResult.matched === 1 ? '' : 's'}
+            {importResult.dateBounds &&
+              ` (${importResult.dateBounds.min} to ${importResult.dateBounds.max})`}
+            .
           </div>
           {importResult.unmatched.length > 0 && (
             <div className="flex items-start gap-2 text-amber-700 bg-amber-50 px-3 py-2 rounded text-sm">
               <AlertCircle className="w-4 h-4 mt-0.5 shrink-0" />
               <span>
-                Not found in the impact database (skipped) - add them on the
-                Configuration page:{' '}
-                <strong>{[...new Set(importResult.unmatched)].join(', ')}</strong>
+                Not in the impact database ({importResult.unmatchedDoses} dose
+                {importResult.unmatchedDoses === 1 ? '' : 's'} skipped) - add them
+                on the Configuration page:{' '}
+                <strong>{importResult.unmatched.join(', ')}</strong>
               </span>
+            </div>
+          )}
+          {importResult.droppedZeroDose > 0 && (
+            <div className="text-xs text-slate-400">
+              {importResult.droppedZeroDose} eligible slot
+              {importResult.droppedZeroDose === 1 ? '' : 's'} skipped for zero /
+              blank dose count.
             </div>
           )}
         </div>
@@ -140,7 +147,7 @@ export default function MedicationForm() {
           onChange={(e) => setSelectedMedication(e.target.value)}
           className="input-field flex-1"
         >
-          <option value="">Select medication...</option>
+          <option value="">Add manually...</option>
           {medications.map((med) => (
             <option key={med.id} value={med.id}>
               {med.name}
@@ -167,74 +174,38 @@ export default function MedicationForm() {
         </button>
       </form>
 
-      {doseEntries.length === 0 ? (
+      {summary.length === 0 ? (
         <p className="text-slate-500 text-center py-4">
-          No doses added yet. Upload a CSV or select a medication and enter the
-          number of doses above.
+          No switchable doses in view. Upload an audit CSV, add one manually, or
+          relax the filters.
         </p>
       ) : (
-        <ul className="space-y-2">
-          {doseEntries.map((entry) => (
-            <li
-              key={entry.id}
-              className="flex items-center justify-between bg-slate-50 rounded-lg px-4 py-3"
-            >
-              <div className="flex items-center gap-3">
-                <span className="font-medium text-slate-700">
-                  {getMedicationName(entry.medicationId)}
+        <>
+          <ul className="space-y-2">
+            {summary.map((row) => (
+              <li
+                key={row.medicationId}
+                className="flex items-center justify-between bg-slate-50 rounded-lg px-4 py-3"
+              >
+                <div className="flex items-center gap-3">
+                  <span className="font-medium text-slate-700">{row.name}</span>
+                  {row.unitCount > 0 && (
+                    <span className="text-xs text-slate-400">
+                      {row.unitCount} unit{row.unitCount === 1 ? '' : 's'}
+                    </span>
+                  )}
+                </div>
+                <span className="bg-primary-100 text-primary-700 px-2 py-1 rounded text-sm">
+                  {row.doses} doses
                 </span>
-                {editingId === entry.id ? (
-                  <input
-                    type="number"
-                    min="1"
-                    value={editValue}
-                    onChange={(e) => setEditValue(e.target.value)}
-                    className="w-24 px-2 py-1 border border-primary-300 rounded focus:outline-none focus:ring-2 focus:ring-primary-500"
-                    autoFocus
-                  />
-                ) : (
-                  <span className="bg-primary-100 text-primary-700 px-2 py-1 rounded text-sm">
-                    {entry.doses} doses
-                  </span>
-                )}
-              </div>
-
-              <div className="flex items-center gap-2">
-                {editingId === entry.id ? (
-                  <>
-                    <button
-                      onClick={() => saveEdit(entry.id)}
-                      className="p-1 text-green-600 hover:bg-green-100 rounded"
-                    >
-                      <Check className="w-5 h-5" />
-                    </button>
-                    <button
-                      onClick={cancelEdit}
-                      className="p-1 text-slate-500 hover:bg-slate-200 rounded"
-                    >
-                      <X className="w-5 h-5" />
-                    </button>
-                  </>
-                ) : (
-                  <>
-                    <button
-                      onClick={() => startEditing(entry)}
-                      className="p-1 text-slate-500 hover:bg-slate-200 rounded"
-                    >
-                      <Edit2 className="w-5 h-5" />
-                    </button>
-                    <button
-                      onClick={() => removeDoseEntry(entry.id)}
-                      className="p-1 text-red-500 hover:bg-red-100 rounded"
-                    >
-                      <Trash2 className="w-5 h-5" />
-                    </button>
-                  </>
-                )}
-              </div>
-            </li>
-          ))}
-        </ul>
+              </li>
+            ))}
+          </ul>
+          <div className="flex justify-between items-center mt-3 px-4 text-sm font-medium text-slate-600">
+            <span>Total switchable doses in view</span>
+            <span>{totalDoses}</span>
+          </div>
+        </>
       )}
     </div>
   )

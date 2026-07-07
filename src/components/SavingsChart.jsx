@@ -4,15 +4,20 @@ import { useMedication } from '../context/MedicationContext'
 import { calculateTotalSavings } from '../utils/calculations'
 
 export default function SavingsChart() {
-  const { medications, doseEntries, switchPercentage, timePeriod, auditDays } =
-    useMedication()
+  const {
+    medications,
+    filteredDoseEntries,
+    switchPercentage,
+    timePeriod,
+    effectiveAuditDays,
+  } = useMedication()
 
   const savings = calculateTotalSavings(
-    doseEntries,
+    filteredDoseEntries,
     medications,
     switchPercentage,
     timePeriod,
-    auditDays
+    effectiveAuditDays
   )
 
   const timePeriodLabel = timePeriod.charAt(0).toUpperCase() + timePeriod.slice(1)
@@ -20,7 +25,7 @@ export default function SavingsChart() {
   const co2Data = [{ name: 'CO2', value: savings.co2 }]
   const plasticData = [{ name: 'Plastic', value: savings.plastic }]
 
-  if (doseEntries.length === 0) {
+  if (filteredDoseEntries.length === 0) {
     return (
       <div className="card">
         <h2 className="text-lg font-semibold text-slate-800 mb-4">

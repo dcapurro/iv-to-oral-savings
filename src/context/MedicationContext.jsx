@@ -1,13 +1,13 @@
-import { createContext, useContext, useState, useEffect } from 'react'
+import { createContext, useContext, useState, useEffect, useMemo } from 'react'
 import { defaultMedications } from '../data/defaultMedications'
 
 const MedicationContext = createContext()
 
-// Storage keys are versioned (v2) because the data model changed from a
-// per-2-day / patient-count basis to a per-dose basis.
+// Storage keys are versioned (v3): dose entries now carry unit/ward/date so the
+// calculator can filter by unit, ward and an audit date range.
 const STORAGE_KEYS = {
-  medications: 'iv-oral-medications-v2',
-  doseEntries: 'iv-oral-dose-entries-v2',
+  medications: 'iv-oral-medications-v3',
+  doseEntries: 'iv-oral-dose-entries-v3',
 }
 
 const slugify = (name) =>
@@ -29,14 +29,23 @@ const loadStored = (key, fallback) => {
   return fallback
 }
 
+// Inclusive day count between two YYYY-MM-DD strings (>= 1).
+const daysBetween = (min, max) => {
+  if (!min || !max) return 1
+  const a = Date.parse(min)
+  const b = Date.parse(max)
+  if (Number.isNaN(a) || Number.isNaN(b)) return 1
+  return Math.max(1, Math.round((b - a) / 86400000) + 1)
+}
+
 export function MedicationProvider({ children }) {
   // Medication impact database: { id, name, co2PerDose, plasticPerDose }
   const [medications, setMedications] = useState(() =>
     loadStored(STORAGE_KEYS.medications, defaultMedications)
   )
 
-  // Dose entries: { id, medicationId, doses } - doses that were missed
-  // opportunities to switch from IV to oral.
+  // Dose entries (one per eligible audit slot):
+  // { id, medicationId, doses, unit, ward, dateStr }
   const [doseEntries, setDoseEntries] = useState(() =>
     loadStored(STORAGE_KEYS.doseEntries, [])
   )
@@ -46,6 +55,12 @@ export function MedicationProvider({ children }) {
   const [timePeriod, setTimePeriod] = useState('month')
   const [auditDays, setAuditDays] = useState(30)
 
+  // Filters that scope what the calculator displays.
+  const [selectedUnit, setSelectedUnit] = useState('all')
+  const [selectedWard, setSelectedWard] = useState('all')
+  const [startDate, setStartDate] = useState('') // YYYY-MM-DD, '' = no bound
+  const [endDate, setEndDate] = useState('')
+
   useEffect(() => {
     localStorage.setItem(STORAGE_KEYS.medications, JSON.stringify(medications))
   }, [medications])
@@ -53,6 +68,45 @@ export function MedicationProvider({ children }) {
   useEffect(() => {
     localStorage.setItem(STORAGE_KEYS.doseEntries, JSON.stringify(doseEntries))
   }, [doseEntries])
+
+  // ── Derived filter options ──────────────────────────────────────────────
+  const availableUnits = useMemo(
+    () => [...new Set(doseEntries.map((e) => e.unit).filter(Boolean))].sort(),
+    [doseEntries]
+  )
+  const availableWards = useMemo(
+    () => [...new Set(doseEntries.map((e) => e.ward).filter(Boolean))].sort(),
+    [doseEntries]
+  )
+  // Min/max audit date across all loaded entries (for date-picker bounds).
+  const dataDateBounds = useMemo(() => {
+    const dates = doseEntries.map((e) => e.dateStr).filter(Boolean).sort()
+    return dates.length ? { min: dates[0], max: dates[dates.length - 1] } : null
+  }, [doseEntries])
+
+  // ── Filtered view of the dose entries ───────────────────────────────────
+  const filteredDoseEntries = useMemo(() => {
+    return doseEntries.filter((e) => {
+      if (selectedUnit !== 'all' && e.unit !== selectedUnit) return false
+      if (selectedWard !== 'all' && e.ward !== selectedWard) return false
+      // Undated (manually added) entries always pass the date filter.
+      if (e.dateStr) {
+        if (startDate && e.dateStr < startDate) return false
+        if (endDate && e.dateStr > endDate) return false
+      }
+      return true
+    })
+  }, [doseEntries, selectedUnit, selectedWard, startDate, endDate])
+
+  // Effective audit length used for week/month/year projection. When dated
+  // entries exist, use the active date window (explicit start/end, else the
+  // data bounds); otherwise fall back to the manual auditDays field.
+  const effectiveAuditDays = useMemo(() => {
+    if (!dataDateBounds) return auditDays
+    const min = startDate || dataDateBounds.min
+    const max = endDate || dataDateBounds.max
+    return daysBetween(min, max)
+  }, [dataDateBounds, startDate, endDate, auditDays])
 
   // ── Medication database operations ──────────────────────────────────────
   const addMedication = (medication) => {
@@ -76,7 +130,6 @@ export function MedicationProvider({ children }) {
   }
 
   // Bulk import medications from CSV: [{ name, co2PerDose, plasticPerDose }].
-  // Upserts by name (case-insensitive). Returns a summary.
   const importMedications = (list) => {
     let added = 0
     let updated = 0
@@ -115,68 +168,84 @@ export function MedicationProvider({ children }) {
   }
 
   // ── Dose entry operations ───────────────────────────────────────────────
-  // Add doses for a medication, merging into an existing entry if present.
+  // Manual add (no unit/ward/date). Merges into an existing manual entry.
   const addDoseEntry = (medicationId, doses) => {
     setDoseEntries((prev) => {
-      const existing = prev.find((e) => e.medicationId === medicationId)
+      const existing = prev.find(
+        (e) => e.medicationId === medicationId && !e.unit && !e.dateStr
+      )
       if (existing) {
         return prev.map((e) =>
-          e.medicationId === medicationId ? { ...e, doses: e.doses + doses } : e
+          e === existing ? { ...e, doses: e.doses + doses } : e
         )
       }
-      return [...prev, { id: `dose-${Date.now()}`, medicationId, doses }]
+      return [
+        ...prev,
+        { id: `dose-${Date.now()}`, medicationId, doses, unit: '', ward: '', dateStr: '' },
+      ]
     })
-  }
-
-  const updateDoseEntry = (id, doses) => {
-    setDoseEntries((prev) =>
-      prev.map((e) => (e.id === id ? { ...e, doses } : e))
-    )
   }
 
   const removeDoseEntry = (id) => {
     setDoseEntries((prev) => prev.filter((e) => e.id !== id))
   }
 
-  const clearDoseEntries = () => setDoseEntries([])
+  const clearDoseEntries = () => {
+    setDoseEntries([])
+    setSelectedUnit('all')
+    setSelectedWard('all')
+    setStartDate('')
+    setEndDate('')
+  }
 
-  // Bulk import doses from CSV: [{ name, doses }]. Matches by medication name
-  // (case-insensitive) against the database. Returns matched count and the
-  // list of names that could not be matched.
-  const importDoses = (list) => {
+  // Load an audit file: replaces all dose entries with the eligible (switch=Yes)
+  // slots, matched by medication name (case-insensitive) against the impact DB.
+  // Report-only: unmatched names are dropped and returned for display.
+  const importAuditDoses = (entries) => {
+    const next = []
     let matched = 0
-    const unmatched = []
+    let matchedDoses = 0
+    const unmatched = new Set()
+    let unmatchedDoses = 0
 
-    setDoseEntries((prevEntries) => {
-      const next = [...prevEntries]
-      list.forEach((item) => {
-        const name = (item.name || '').trim()
-        const doses = parseInt(item.doses, 10)
-        if (!name || Number.isNaN(doses) || doses <= 0) return
+    entries.forEach((entry, i) => {
+      const name = (entry.name || '').trim()
+      const doses = entry.doses
+      if (!name || !doses) return
 
-        const med = medications.find(
-          (m) => m.name.toLowerCase() === name.toLowerCase()
-        )
-        if (!med) {
-          unmatched.push(name)
-          return
-        }
-        matched++
-        const existing = next.find((e) => e.medicationId === med.id)
-        if (existing) {
-          existing.doses += doses
-        } else {
-          next.push({
-            id: `dose-${Date.now()}-${matched}`,
-            medicationId: med.id,
-            doses,
-          })
-        }
+      const med = medications.find(
+        (m) => m.name.toLowerCase() === name.toLowerCase()
+      )
+      if (!med) {
+        unmatched.add(name)
+        unmatchedDoses += doses
+        return
+      }
+      matched++
+      matchedDoses += doses
+      next.push({
+        id: `dose-${Date.now()}-${i}`,
+        medicationId: med.id,
+        doses,
+        unit: entry.unit || '',
+        ward: entry.ward || '',
+        dateStr: entry.dateStr || '',
       })
-      return next
     })
 
-    return { matched, unmatched }
+    setDoseEntries(next)
+    // Reset filters to show everything just loaded.
+    setSelectedUnit('all')
+    setSelectedWard('all')
+    setStartDate('')
+    setEndDate('')
+
+    return {
+      matched,
+      matchedDoses,
+      unmatched: [...unmatched],
+      unmatchedDoses,
+    }
   }
 
   const value = {
@@ -188,11 +257,23 @@ export function MedicationProvider({ children }) {
     importMedications,
     // Dose entries
     doseEntries,
+    filteredDoseEntries,
     addDoseEntry,
-    updateDoseEntry,
     removeDoseEntry,
     clearDoseEntries,
-    importDoses,
+    importAuditDoses,
+    // Filters
+    selectedUnit,
+    setSelectedUnit,
+    selectedWard,
+    setSelectedWard,
+    startDate,
+    setStartDate,
+    endDate,
+    setEndDate,
+    availableUnits,
+    availableWards,
+    dataDateBounds,
     // Calculator state
     switchPercentage,
     setSwitchPercentage,
@@ -200,6 +281,7 @@ export function MedicationProvider({ children }) {
     setTimePeriod,
     auditDays,
     setAuditDays,
+    effectiveAuditDays,
   }
 
   return (

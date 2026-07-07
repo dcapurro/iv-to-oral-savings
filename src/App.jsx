@@ -1,6 +1,7 @@
 import { useState } from 'react'
 import Header from './components/Header'
 import MedicationForm from './components/MedicationForm'
+import AuditFilters from './components/AuditFilters'
 import SavingsSlider from './components/SavingsSlider'
 import TimePeriodSelector from './components/TimePeriodSelector'
 import SavingsChart from './components/SavingsChart'
@@ -19,6 +20,7 @@ function App() {
           <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
             <div className="space-y-6">
               <MedicationForm />
+              <AuditFilters />
               <SavingsSlider />
               <TimePeriodSelector />
             </div>
