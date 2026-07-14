@@ -5,8 +5,10 @@ import AuditFilters from './components/AuditFilters'
 import SavingsSlider from './components/SavingsSlider'
 import TimePeriodSelector from './components/TimePeriodSelector'
 import SavingsChart from './components/SavingsChart'
+import AuditChart from './components/AuditChart'
 import SavingsSummary from './components/SavingsSummary'
 import Settings from './components/Settings'
+import SyncBanner from './components/SyncBanner'
 
 function App() {
   const [currentPage, setCurrentPage] = useState('calculator')
@@ -16,6 +18,8 @@ function App() {
       <Header currentPage={currentPage} onPageChange={setCurrentPage} />
 
       <main className="container mx-auto px-4 py-8">
+        <SyncBanner />
+
         {currentPage === 'calculator' ? (
           <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
             <div className="space-y-6">
@@ -27,6 +31,7 @@ function App() {
             <div className="space-y-6">
               <SavingsSummary />
               <SavingsChart />
+              <AuditChart />
             </div>
           </div>
         ) : (

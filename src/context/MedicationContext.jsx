@@ -1,10 +1,20 @@
-import { createContext, useContext, useState, useEffect, useMemo } from 'react'
+import { createContext, useContext, useState, useEffect, useMemo, useRef } from 'react'
 import { defaultMedications } from '../data/defaultMedications'
+import {
+  supabase,
+  isSupabaseConfigured,
+  replaceTable,
+  medicationToRow,
+  rowToMedication,
+  doseEntryToRow,
+  rowToDoseEntry,
+} from '../lib/supabase'
 
 const MedicationContext = createContext()
 
 // Storage keys are versioned (v3): dose entries now carry unit/ward/date so the
 // calculator can filter by unit, ward and an audit date range.
+// Only used as a fallback when Supabase is not configured.
 const STORAGE_KEYS = {
   medications: 'iv-oral-medications-v3',
   doseEntries: 'iv-oral-dose-entries-v3',
@@ -39,16 +49,28 @@ const daysBetween = (min, max) => {
 }
 
 export function MedicationProvider({ children }) {
+  // With Supabase configured, the remote tables are the source of truth and
+  // local state starts empty until the initial fetch lands. Without it, the app
+  // falls back to browser-local storage (single device, not persistent).
+  //
   // Medication impact database: { id, name, co2PerDose, plasticPerDose }
   const [medications, setMedications] = useState(() =>
-    loadStored(STORAGE_KEYS.medications, defaultMedications)
+    isSupabaseConfigured ? [] : loadStored(STORAGE_KEYS.medications, defaultMedications)
   )
 
   // Dose entries (one per eligible audit slot):
   // { id, medicationId, doses, unit, ward, dateStr }
   const [doseEntries, setDoseEntries] = useState(() =>
-    loadStored(STORAGE_KEYS.doseEntries, [])
+    isSupabaseConfigured ? [] : loadStored(STORAGE_KEYS.doseEntries, [])
   )
+
+  // 'loading' | 'ready' | 'error' — gates the sync effects below so the initial
+  // (empty) state is never written back over the remote data.
+  const [syncStatus, setSyncStatus] = useState(
+    isSupabaseConfigured ? 'loading' : 'ready'
+  )
+  const [syncError, setSyncError] = useState('')
+  const hydrated = useRef(!isSupabaseConfigured)
 
   // Calculator state
   const [switchPercentage, setSwitchPercentage] = useState(50)
@@ -61,12 +83,77 @@ export function MedicationProvider({ children }) {
   const [startDate, setStartDate] = useState('') // YYYY-MM-DD, '' = no bound
   const [endDate, setEndDate] = useState('')
 
+  // ── Initial load from Supabase ──────────────────────────────────────────
   useEffect(() => {
-    localStorage.setItem(STORAGE_KEYS.medications, JSON.stringify(medications))
+    if (!isSupabaseConfigured) return
+    let cancelled = false
+
+    const load = async () => {
+      try {
+        const [medsResult, dosesResult] = await Promise.all([
+          supabase.from('medications').select('*').order('name'),
+          supabase.from('dose_entries').select('*'),
+        ])
+        if (medsResult.error) throw medsResult.error
+        if (dosesResult.error) throw dosesResult.error
+        if (cancelled) return
+
+        // First run against an empty database: seed it with the built-in list
+        // so there is something to calculate with.
+        let meds = medsResult.data.map(rowToMedication)
+        if (meds.length === 0) {
+          await replaceTable('medications', defaultMedications.map(medicationToRow))
+          if (cancelled) return
+          meds = defaultMedications
+        }
+
+        setMedications(meds)
+        setDoseEntries(dosesResult.data.map(rowToDoseEntry))
+        hydrated.current = true
+        setSyncStatus('ready')
+      } catch (err) {
+        if (cancelled) return
+        setSyncError(err.message || 'Could not reach the database.')
+        setSyncStatus('error')
+      }
+    }
+
+    load()
+    return () => {
+      cancelled = true
+    }
+  }, [])
+
+  // ── Persistence ─────────────────────────────────────────────────────────
+  // Each change mirrors the full list to the remote table (or to localStorage
+  // when Supabase is not configured). `hydrated` stops the initial empty state
+  // from wiping the remote tables before the first fetch completes.
+  const persist = (table, rows, toRow) => {
+    if (!hydrated.current) return
+    if (!isSupabaseConfigured) {
+      localStorage.setItem(table, JSON.stringify(rows))
+      return
+    }
+    replaceTable(table, rows.map(toRow)).catch((err) => {
+      setSyncError(err.message || 'Could not save to the database.')
+      setSyncStatus('error')
+    })
+  }
+
+  useEffect(() => {
+    persist(
+      isSupabaseConfigured ? 'medications' : STORAGE_KEYS.medications,
+      medications,
+      medicationToRow
+    )
   }, [medications])
 
   useEffect(() => {
-    localStorage.setItem(STORAGE_KEYS.doseEntries, JSON.stringify(doseEntries))
+    persist(
+      isSupabaseConfigured ? 'dose_entries' : STORAGE_KEYS.doseEntries,
+      doseEntries,
+      doseEntryToRow
+    )
   }, [doseEntries])
 
   // ── Derived filter options ──────────────────────────────────────────────
@@ -84,8 +171,10 @@ export function MedicationProvider({ children }) {
     return dates.length ? { min: dates[0], max: dates[dates.length - 1] } : null
   }, [doseEntries])
 
-  // ── Filtered view of the dose entries ───────────────────────────────────
-  const filteredDoseEntries = useMemo(() => {
+  // ── Filtered views of the dose entries ──────────────────────────────────
+  // Every audited dose passing the unit/ward/date filters — switchable or not,
+  // in the impact database or not. Drives the audit chart.
+  const filteredAuditEntries = useMemo(() => {
     return doseEntries.filter((e) => {
       if (selectedUnit !== 'all' && e.unit !== selectedUnit) return false
       if (selectedWard !== 'all' && e.ward !== selectedWard) return false
@@ -97,6 +186,13 @@ export function MedicationProvider({ children }) {
       return true
     })
   }, [doseEntries, selectedUnit, selectedWard, startDate, endDate])
+
+  // The subset that actually earns savings: flagged switchable AND costed in
+  // the impact database. Everything downstream of the calculator uses this.
+  const filteredDoseEntries = useMemo(
+    () => filteredAuditEntries.filter((e) => e.switchable && e.medicationId),
+    [filteredAuditEntries]
+  )
 
   // Effective audit length used for week/month/year projection. When dated
   // entries exist, use the active date window (explicit start/end, else the
@@ -126,7 +222,14 @@ export function MedicationProvider({ children }) {
 
   const deleteMedication = (id) => {
     setMedications((prev) => prev.filter((med) => med.id !== id))
-    setDoseEntries((prev) => prev.filter((entry) => entry.medicationId !== id))
+    // The audited doses still happened, so keep them — they just lose their
+    // impact figures. They stay on the audit chart and stop earning savings,
+    // exactly like a drug that was never in the database.
+    setDoseEntries((prev) =>
+      prev.map((entry) =>
+        entry.medicationId === id ? { ...entry, medicationId: '' } : entry
+      )
+    )
   }
 
   // Bulk import medications from CSV: [{ name, co2PerDose, plasticPerDose }].
@@ -179,9 +282,19 @@ export function MedicationProvider({ children }) {
           e === existing ? { ...e, doses: e.doses + doses } : e
         )
       }
+      const med = medications.find((m) => m.id === medicationId)
       return [
         ...prev,
-        { id: `dose-${Date.now()}`, medicationId, doses, unit: '', ward: '', dateStr: '' },
+        {
+          id: `dose-${Date.now()}`,
+          medicationId,
+          name: med ? med.name : medicationId,
+          switchable: true, // manual entries are switchable by definition
+          doses,
+          unit: '',
+          ward: '',
+          dateStr: '',
+        },
       ]
     })
   }
@@ -205,8 +318,28 @@ export function MedicationProvider({ children }) {
     const next = []
     let matched = 0
     let matchedDoses = 0
-    const unmatched = new Set()
     let unmatchedDoses = 0
+
+    // Every distinct medication name in the audit, keyed by lowercase name so
+    // spelling variants that differ only in case collapse into one. Drives the
+    // post-import report and the CSV downloads that let the user fill in the
+    // impact figures for names the database doesn't know yet.
+    const auditNames = new Map()
+    const noteName = (name, doses, med) => {
+      const key = name.toLowerCase()
+      const existing = auditNames.get(key)
+      if (existing) {
+        existing.doses += doses
+        return
+      }
+      auditNames.set(key, {
+        name,
+        doses,
+        inDatabase: Boolean(med),
+        co2PerDose: med ? med.co2PerDose : '',
+        plasticPerDose: med ? med.plasticPerDose : '',
+      })
+    }
 
     entries.forEach((entry, i) => {
       const name = (entry.name || '').trim()
@@ -216,16 +349,27 @@ export function MedicationProvider({ children }) {
       const med = medications.find(
         (m) => m.name.toLowerCase() === name.toLowerCase()
       )
-      if (!med) {
-        unmatched.add(name)
-        unmatchedDoses += doses
-        return
+
+      // The import report is about savings, so it counts only switchable doses:
+      // a non-switchable drug missing from the database costs no savings and is
+      // not something the user needs to go and fix.
+      if (entry.switchable) {
+        noteName(name, doses, med)
+        if (med) {
+          matched++
+          matchedDoses += doses
+        } else {
+          unmatchedDoses += doses
+        }
       }
-      matched++
-      matchedDoses += doses
+
+      // Store every dose regardless. medicationId is '' when the drug has no
+      // impact figures; the chart keys off `name` so it can still plot it.
       next.push({
         id: `dose-${Date.now()}-${i}`,
-        medicationId: med.id,
+        medicationId: med ? med.id : '',
+        name,
+        switchable: Boolean(entry.switchable),
         doses,
         unit: entry.unit || '',
         ward: entry.ward || '',
@@ -240,15 +384,23 @@ export function MedicationProvider({ children }) {
     setStartDate('')
     setEndDate('')
 
+    // Busiest first, so the names worth fixing float to the top of the report.
+    const auditMedications = [...auditNames.values()].sort((a, b) => b.doses - a.doses)
+
     return {
       matched,
       matchedDoses,
-      unmatched: [...unmatched],
       unmatchedDoses,
+      auditMedications,
+      unmatched: auditMedications.filter((m) => !m.inDatabase),
     }
   }
 
   const value = {
+    // Sync state
+    syncStatus,
+    syncError,
+    isSupabaseConfigured,
     // Medication database
     medications,
     addMedication,
@@ -258,6 +410,7 @@ export function MedicationProvider({ children }) {
     // Dose entries
     doseEntries,
     filteredDoseEntries,
+    filteredAuditEntries,
     addDoseEntry,
     removeDoseEntry,
     clearDoseEntries,
