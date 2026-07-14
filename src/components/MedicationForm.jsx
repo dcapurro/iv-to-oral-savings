@@ -1,7 +1,8 @@
 import { useRef, useState, useMemo } from 'react'
-import { Plus, Trash2, Check, Syringe, Upload, AlertCircle } from 'lucide-react'
+import { Plus, Trash2, Check, Syringe, Upload, AlertCircle, Download } from 'lucide-react'
 import { useMedication } from '../context/MedicationContext'
 import { parseAuditFile } from '../utils/auditFile'
+import { toCsv, downloadCsv } from '../utils/csv'
 
 export default function MedicationForm() {
   const {
@@ -44,6 +45,21 @@ export default function MedicationForm() {
     }
     reader.readAsText(file)
     e.target.value = ''
+  }
+
+  // Export medication names from the audit in the exact shape the Configuration
+  // page's CSV upload expects, so the user can fill in the blank carbon/plastic
+  // cells and upload it straight back. Known drugs carry their current values;
+  // unknown ones are left blank (a blank value is skipped on re-import rather
+  // than being read as zero). The trailing dose count is informational and
+  // ignored on upload.
+  const downloadMedicationCsv = (list, scope) => {
+    const rows = [
+      ['medication', 'carbon', 'plastic', 'doses in audit'],
+      ...list.map((m) => [m.name, m.co2PerDose, m.plasticPerDose, m.doses]),
+    ]
+    const date = new Date().toISOString().slice(0, 10)
+    downloadCsv(`medications-${scope}-${date}.csv`, toCsv(rows))
   }
 
   const getMedicationName = (medicationId) => {
@@ -154,14 +170,52 @@ export default function MedicationForm() {
             .
           </div>
           {importResult.unmatched.length > 0 && (
-            <div className="flex items-start gap-2 text-amber-700 bg-amber-50 px-3 py-2 rounded text-sm">
-              <AlertCircle className="w-4 h-4 mt-0.5 shrink-0" />
-              <span>
-                Not in the impact database ({importResult.unmatchedDoses} dose
-                {importResult.unmatchedDoses === 1 ? '' : 's'} skipped) - add them
-                on the Configuration page:{' '}
-                <strong>{importResult.unmatched.join(', ')}</strong>
-              </span>
+            <div className="text-amber-800 bg-amber-50 border border-amber-200 px-3 py-3 rounded text-sm">
+              <div className="flex items-start gap-2">
+                <AlertCircle className="w-4 h-4 mt-0.5 shrink-0" />
+                <div>
+                  <strong>
+                    {importResult.unmatched.length} medication
+                    {importResult.unmatched.length === 1 ? '' : 's'} not in the
+                    impact database
+                  </strong>{' '}
+                  — {importResult.unmatchedDoses} dose
+                  {importResult.unmatchedDoses === 1 ? '' : 's'} were skipped and
+                  are not counted in the savings below.
+                  <p className="mt-1 text-amber-700">
+                    Download the list, fill in the carbon and plastic columns,
+                    then upload it on the Configuration page.
+                  </p>
+                </div>
+              </div>
+
+              <div className="flex flex-wrap gap-2 mt-3 sm:ml-6">
+                <button
+                  onClick={() => downloadMedicationCsv(importResult.unmatched, 'unmatched')}
+                  className="btn-secondary flex items-center gap-2 text-sm"
+                >
+                  <Download className="w-4 h-4" />
+                  Unmatched only ({importResult.unmatched.length})
+                </button>
+                <button
+                  onClick={() =>
+                    downloadMedicationCsv(importResult.auditMedications, 'all')
+                  }
+                  className="btn-secondary flex items-center gap-2 text-sm"
+                >
+                  <Download className="w-4 h-4" />
+                  All in audit ({importResult.auditMedications.length})
+                </button>
+              </div>
+
+              <ul className="mt-3 sm:ml-6 grid grid-cols-1 sm:grid-cols-2 gap-x-4 text-xs text-amber-700">
+                {importResult.unmatched.map((m) => (
+                  <li key={m.name} className="flex justify-between gap-2 py-0.5">
+                    <span className="truncate">{m.name}</span>
+                    <span className="shrink-0 tabular-nums">{m.doses}</span>
+                  </li>
+                ))}
+              </ul>
             </div>
           )}
           {importResult.droppedZeroDose > 0 && (

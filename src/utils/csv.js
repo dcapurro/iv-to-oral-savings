@@ -57,6 +57,28 @@ export function toObjects(rows) {
   })
 }
 
+// Serialize rows (array of arrays) back to CSV text, quoting any field that
+// contains a comma, quote or newline.
+export function toCsv(rows) {
+  const escape = (value) => {
+    const s = value === null || value === undefined ? '' : String(value)
+    return /[",\n\r]/.test(s) ? `"${s.replace(/"/g, '""')}"` : s
+  }
+  return rows.map((r) => r.map(escape).join(',')).join('\n')
+}
+
+// Trigger a browser download of `text` as `filename`.
+export function downloadCsv(filename, text) {
+  const url = URL.createObjectURL(new Blob([text], { type: 'text/csv;charset=utf-8;' }))
+  const link = document.createElement('a')
+  link.href = url
+  link.download = filename
+  document.body.appendChild(link)
+  link.click()
+  document.body.removeChild(link)
+  URL.revokeObjectURL(url)
+}
+
 // Pick a value from a row object by fuzzy header match (case-insensitive
 // "contains"). Returns the first keyword that matches a header.
 export function pick(obj, ...keywords) {
